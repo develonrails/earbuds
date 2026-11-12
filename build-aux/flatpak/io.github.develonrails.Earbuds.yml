@@ -25,6 +25,10 @@ finish-args:
   # The control link itself is a raw L2CAP (ATT) socket to the buds, not a
   # BlueZ object: AF_BLUETOOTH sockets are closed to apps without this.
   - --allow=bluetooth
+  # ...and the kernel only has Bluetooth sockets in the host's network
+  # namespace: in a sandbox of its own, socket() fails with EAFNOSUPPORT.
+  # Earbuds makes no network connections; this is for the namespace alone.
+  - --share=network
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

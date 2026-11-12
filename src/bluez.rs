@@ -20,6 +20,7 @@ use crate::protocol::{HARMAN_SERVICE, JBL_VENDOR_ID};
 
 const BLUEZ: &str = "org.bluez";
 const DEVICE: &str = "org.bluez.Device1";
+const ADAPTER: &str = "org.bluez.Adapter1";
 
 type Props = HashMap<String, OwnedValue>;
 
@@ -280,18 +281,27 @@ impl Bluez {
 }
 
 /// Whether a BlueZ signal may mean a headset came or went: a device's
-/// Connected changed, or a device or adapter appeared or disappeared. The
-/// stream also carries every RSSI update of any scan, which do not.
+/// Connected changed, or an adapter appeared, went or powered on or off.
+/// The stream also carries every device a scan (ours too) adds or removes,
+/// and every RSSI update, which do not: waking on those would turn every
+/// back-off into a busy loop.
 pub fn is_connection_change(msg: &Message) -> bool {
     let header = msg.header();
     match header.member().map(|m| m.as_str()) {
-        Some("InterfacesAdded" | "InterfacesRemoved") => true,
+        Some("InterfacesAdded") => msg
+            .body()
+            .deserialize::<(OwnedObjectPath, HashMap<String, Props>)>()
+            .is_ok_and(|(_, ifaces)| ifaces.contains_key(ADAPTER)),
+        Some("InterfacesRemoved") => msg
+            .body()
+            .deserialize::<(OwnedObjectPath, Vec<String>)>()
+            .is_ok_and(|(_, ifaces)| ifaces.iter().any(|i| i == ADAPTER)),
         Some("PropertiesChanged") => msg
             .body()
             .deserialize::<(String, Props, Vec<String>)>()
             .is_ok_and(|(iface, changed, _)| {
                 (iface == DEVICE && changed.contains_key("Connected"))
-                    || (iface == "org.bluez.Adapter1" && changed.contains_key("Powered"))
+                    || (iface == ADAPTER && changed.contains_key("Powered"))
             }),
         _ => false,
     }
@@ -306,6 +316,41 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), OwnedValue::try_from(v.clone()).unwrap()))
             .collect()
+    }
+
+    fn added(iface: &str) -> Message {
+        let path = ObjectPath::try_from("/org/bluez/hci0/dev_5A_11_22_33_44_55").unwrap();
+        let ifaces: HashMap<String, Props> = HashMap::from([(iface.to_string(), Props::new())]);
+        Message::signal("/", "org.freedesktop.DBus.ObjectManager", "InterfacesAdded")
+            .unwrap()
+            .build(&(path, ifaces))
+            .unwrap()
+    }
+
+    fn changed(iface: &str, key: &str) -> Message {
+        let props = props(&[(key, Value::from(true))]);
+        Message::signal(
+            "/org/bluez/hci0/dev_X",
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+        )
+        .unwrap()
+        .build(&(iface, props, Vec::<String>::new()))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_scan_does_not_count_as_a_connection_change() {
+        assert!(!is_connection_change(&added(DEVICE)));
+        assert!(!is_connection_change(&changed(DEVICE, "RSSI")));
+        assert!(!is_connection_change(&changed(DEVICE, "ServiceData")));
+    }
+
+    #[test]
+    fn connecting_and_adapters_do() {
+        assert!(is_connection_change(&changed(DEVICE, "Connected")));
+        assert!(is_connection_change(&changed(ADAPTER, "Powered")));
+        assert!(is_connection_change(&added(ADAPTER)));
     }
 
     #[test]
