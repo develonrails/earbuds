@@ -87,7 +87,9 @@ struct Ui {
     /// Set while the window itself moves a control, so that does not go
     /// back out to the buds as a command.
     updating: Cell<bool>,
+    header: adw::HeaderBar,
     title: adw::WindowTitle,
+    switcher: adw::ViewSwitcher,
     stack: gtk::Stack,
     status: adw::StatusPage,
     toasts: adw::ToastOverlay,
@@ -95,7 +97,7 @@ struct Ui {
     gauges: [Gauge; 3],
     mode_group: adw::PreferencesGroup,
     modes: adw::ToggleGroup,
-    eq_group: adw::PreferencesGroup,
+    eq_tab: adw::ViewStackPage,
     eq_choice: adw::ComboRow,
     sliders: Vec<gtk::Scale>,
     eq_timer: RefCell<Option<glib::SourceId>>,
@@ -117,31 +119,14 @@ pub fn build(
     states: async_channel::Receiver<State>,
 ) -> adw::ApplicationWindow {
     let ui = Rc::new(Ui::new(engine));
-
-    let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&ui.title));
-    let menu = gtk::gio::Menu::new();
-    menu.append(Some("About Earbuds"), Some("app.about"));
-    let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .menu_model(&menu)
-        .tooltip_text("Main Menu")
-        .primary(true)
-        .build();
-    header.pack_end(&menu_button);
-
-    let view = adw::ToolbarView::new();
-    view.add_top_bar(&header);
-    view.set_content(Some(&ui.toasts));
-
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Earbuds")
-        .default_width(400)
-        .default_height(720)
+        .default_width(460)
+        .default_height(780)
         .width_request(360)
         .height_request(294)
-        .content(&view)
+        .content(&ui.toasts)
         .build();
 
     ui.connect();
@@ -163,6 +148,31 @@ pub fn build(
 
 fn group(title: &str) -> adw::PreferencesGroup {
     adw::PreferencesGroup::builder().title(title).build()
+}
+
+/// Scrolling over a slider or a spin row scrolls the page instead of
+/// changing the value: only dragging, clicking or the keyboard change it.
+/// Otherwise scrolling down the page moves whatever passes under the pointer.
+fn scroll_page_not_value(widget: &impl IsA<gtk::Widget>) {
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    scroll.connect_scroll(|ctrl, _dx, dy| {
+        let page = ctrl
+            .widget()
+            .and_then(|w| w.ancestor(gtk::ScrolledWindow::static_type()))
+            .and_downcast::<gtk::ScrolledWindow>();
+        if let Some(page) = page {
+            let adj = page.vadjustment();
+            // A wheel click scrolls as far as GtkScrolledWindow's own would.
+            let step = match ctrl.unit() {
+                gtk::gdk::ScrollUnit::Wheel => adj.page_size().powf(2.0 / 3.0),
+                _ => 1.0,
+            };
+            adj.set_value(adj.value() + dy * step);
+        }
+        glib::Propagation::Stop
+    });
+    widget.add_controller(scroll);
 }
 
 impl Ui {
@@ -203,6 +213,7 @@ impl Ui {
         let bands = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .homogeneous(true)
+            .margin_top(12)
             .css_classes(["card", "bands"])
             .build();
         let mut sliders = Vec::new();
@@ -234,9 +245,15 @@ impl Ui {
             bands.append(&column);
             sliders.push(scale);
         }
-        let eq_group = group("Equalizer");
-        eq_group.add(&eq_choice);
-        eq_group.add(&bands); // not a row, so it goes below the list
+        sliders.iter().for_each(scroll_page_not_value);
+        // The curve has a tab of its own, as in Descant's preferences: ten
+        // sliders in the settings page fought for room, and got moved by
+        // every scroll that passed over them.
+        let curve = adw::PreferencesGroup::new();
+        curve.add(&eq_choice);
+        curve.add(&bands); // not a row, so it goes below the list
+        let eq_page = adw::PreferencesPage::new();
+        eq_page.add(&curve);
 
         // Voice and settings
         let voice_aware = adw::SpinRow::builder()
@@ -244,6 +261,7 @@ impl Ui {
             .subtitle("Hear your own voice on calls")
             .adjustment(&gtk::Adjustment::new(0.0, 0.0, 5.0, 1.0, 1.0, 0.0))
             .build();
+        scroll_page_not_value(&voice_aware);
         let voice_prompts = adw::SwitchRow::builder().title("Voice Prompts").build();
         let safe_sound = adw::SwitchRow::builder()
             .title("Safe Sound")
@@ -292,7 +310,6 @@ impl Ui {
         for g in [
             &battery_group,
             &mode_group,
-            &eq_group,
             &voice_group,
             &find_group,
             &about_group,
@@ -304,15 +321,50 @@ impl Ui {
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
+        let views = adw::ViewStack::new();
+        views.add_titled_with_icon(
+            &page,
+            Some("earbuds"),
+            "Earbuds",
+            "audio-headphones-symbolic",
+        );
+        let eq_tab = views.add_titled_with_icon(
+            &eq_page,
+            Some("equalizer"),
+            "Equalizer",
+            "audio-speakers-symbolic",
+        );
+        let switcher = adw::ViewSwitcher::builder()
+            .stack(&views)
+            .policy(adw::ViewSwitcherPolicy::Wide)
+            .build();
         stack.add_named(&status, Some("status"));
-        stack.add_named(&page, Some("device"));
+        stack.add_named(&views, Some("device"));
+        let title = adw::WindowTitle::new("Earbuds", "");
+        let header = adw::HeaderBar::new();
+        header.set_title_widget(Some(&title));
+        let menu = gtk::gio::Menu::new();
+        menu.append(Some("About Earbuds"), Some("app.about"));
+        header.pack_end(
+            &gtk::MenuButton::builder()
+                .icon_name("open-menu-symbolic")
+                .menu_model(&menu)
+                .tooltip_text("Main Menu")
+                .primary(true)
+                .build(),
+        );
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&header);
+        view.set_content(Some(&stack));
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&stack));
+        toasts.set_child(Some(&view));
 
         Ui {
             engine,
             updating: Cell::new(false),
-            title: adw::WindowTitle::new("Earbuds", ""),
+            header,
+            title,
+            switcher,
             stack,
             status,
             toasts,
@@ -320,7 +372,7 @@ impl Ui {
             gauges,
             mode_group,
             modes,
-            eq_group,
+            eq_tab,
             eq_choice,
             sliders,
             eq_timer: RefCell::new(None),
@@ -447,9 +499,16 @@ impl Ui {
             Link::Ready => (name, None, "", ""),
         };
         self.title.set_subtitle(subtitle);
+        // The tabs only once there is something to show in them.
         if state.link == Link::Ready {
+            if self.header.title_widget().as_ref() != Some(self.switcher.upcast_ref()) {
+                self.header.set_title_widget(Some(&self.switcher));
+            }
             self.stack.set_visible_child_name("device");
             return;
+        }
+        if self.header.title_widget().as_ref() != Some(self.title.upcast_ref()) {
+            self.header.set_title_widget(Some(&self.title));
         }
         self.stack.set_visible_child_name("status");
         self.status.set_title(title);
@@ -473,8 +532,9 @@ impl Ui {
         self.gauges[0].show(b.left);
         self.gauges[1].show(b.right);
         self.gauges[2].show(b.case);
+        // The name lives here once the header shows the tabs.
         self.battery_group
-            .set_visible(b.left.is_some() || b.right.is_some() || b.case.is_some());
+            .set_title(s.name.as_deref().unwrap_or(""));
 
         self.mode_group.set_visible(s.mode.is_some());
         // One bud in the case: the buds decline noise cancelling, and quietly.
@@ -492,7 +552,7 @@ impl Ui {
             self.modes.set_active_name(name);
         }
 
-        self.eq_group.set_visible(s.eq.is_some());
+        self.eq_tab.set_visible(s.eq.is_some());
         if let Some(eq) = s.eq {
             let selected = match eq.preset {
                 EqPreset::Off => 0,
