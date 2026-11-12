@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.develonrails.Earbuds</id>
+
+  <name>Earbuds</name>
+  <summary>Noise control, equalizer and battery for JBL earbuds</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.develonrails">
+    <name>Mitchell de Jong</name>
+  </developer>
+
+  <description>
+    <p>
+      Earbuds does what the JBL Headphones phone app does, in a small native
+      GNOME window: no phone, no account, no internet.
+    </p>
+    <ul>
+      <li>Battery of each earbud and the case</li>
+      <li>Noise cancelling, Ambient Aware, TalkThru or off</li>
+      <li>JBL's equalizer presets, or your own ten-band curve</li>
+      <li>VoiceAware, voice prompts, Safe Sound and automatic power off</li>
+      <li>Find your earbuds by making one of them beep</li>
+    </ul>
+    <p>
+      Made for and tested on the JBL Wave Buds 2. Other JBL earbuds that speak
+      the same protocol show the settings they answer for.
+      Earbuds is not affiliated with JBL or Harman.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.develonrails.Earbuds.desktop</launchable>
+
+  <url type="homepage">https://github.com/develonrails/earbuds</url>
+  <url type="bugtracker">https://github.com/develonrails/earbuds/issues</url>
+  <url type="vcs-browser">https://github.com/develonrails/earbuds</url>
+
+  <categories>
+    <category>Settings</category>
+    <category>HardwareSettings</category>
+  </categories>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-11-12">
+      <description>
+        <p>The first build.</p>
+      </description>
+    </release>
+  </releases>
+</component>

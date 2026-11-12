@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Earbuds
+GenericName=Earbuds Settings
+Comment=Noise control, equalizer and battery for JBL earbuds
+Categories=Settings;HardwareSettings;GTK;GNOME;
+Keywords=jbl;headphones;earbuds;bluetooth;anc;noise;equalizer;battery;
+Exec=earbuds
+Icon=io.github.develonrails.Earbuds
+Terminal=false
+Type=Application
+StartupNotify=true
+SingleMainWindow=true
+DBusActivatable=false

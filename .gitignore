@@ -1,0 +1,9 @@
+target/
+/vendor/
+/.flatpak-builder/
+build-dir/
+repo/
+*.flatpak
+
+# Private working notes, kept beside the checkout but not published
+/CLAUDE.md

@@ -1,0 +1,34 @@
+[package]
+name = "earbuds"
+description = "Settings for JBL earbuds, in a small native GNOME window"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Mitchell de Jong"]
+repository = "https://github.com/develonrails/earbuds"
+rust-version = "1.92"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
+# One thread for all Bluetooth work: a current-thread runtime, so no pool.
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+# BlueZ over D-Bus, in pure Rust: no libdbus.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+# Only the L2CAP socket, for the ATT link straight to the buds. Its BlueZ
+# (D-Bus) half is left out; zbus covers that.
+bluer = { version = "0.17", default-features = false, features = ["l2cap"] }
+async-channel = "2"
+futures-util = { version = "0.3", default-features = false }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+
+# A newer push to a pull request replaces the run for the older one; runs on
+# main all finish, or the Flatpak job would never get to the end.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Formatting, lints and tests.
+  #
+  # Fedora rather than the runner's Ubuntu: the app links GTK 4 and libadwaita
+  # versions Ubuntu does not ship. Fedora has them in one dnf call.
+  test:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    # Without debug info and incremental state, target/ (cached below) stays
+    # small enough to save: with them the runner's disk ran out while the
+    # cache was being packed.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust and the libraries we link
+        run: >
+          dnf install -y -q rust cargo rustfmt clippy gcc pkgconf-pkg-config
+          gtk4-devel libadwaita-devel
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  # The Flatpak is how Earbuds is installed, so a manifest that stopped building
+  # would be found by a user rather than here. Only on main: the build takes
+  # a while, and while the repository is private, minutes are limited.
+  #
+  # The runner's cargo vendors the crates; the build itself runs offline in
+  # the GNOME SDK with the rust-stable extension, exactly as locally.
+  flatpak:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # flatpak-builder from Flathub, the same one used locally: Ubuntu's
+      # packaged one fails AppStream composition on this metadata.
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends flatpak
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          # The SDK beforehand: the sandboxed builder cannot install it on a
+          # runner without a D-Bus session.
+          flatpak install --user -y --noninteractive flathub org.flatpak.Builder \
+            org.gnome.Sdk//51 org.gnome.Platform//51 \
+            org.freedesktop.Sdk.Extension.rust-stable//26.08
+
+      - name: Vendor the crates
+        run: cargo vendor --locked vendor > build-aux/flatpak/cargo-config.toml
+
+      - uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('build-aux/flatpak/*.yml', 'Cargo.lock') }}
+          restore-keys: flatpak-builder-
+
+      - name: Build
+        run: >
+          dbus-run-session -- flatpak run org.flatpak.Builder --user --force-clean
+          --repo=repo build-dir build-aux/flatpak/io.github.develonrails.Earbuds.yml
+
+      # The OSTree repository is what release.yml publishes; the bundle is the
+      # single-file fallback.
+      - name: Package
+        run: |
+          flatpak build-bundle repo earbuds.flatpak io.github.develonrails.Earbuds
+          tar -cf earbuds-repo.tar repo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earbuds-repo
+          path: earbuds-repo.tar
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earbuds-x86_64.flatpak
+          path: earbuds.flatpak
+          retention-days: 7

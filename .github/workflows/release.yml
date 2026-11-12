@@ -1,0 +1,255 @@
+name: Release
+
+# Earbuds is installed from a Flatpak repository, served from GitHub Pages
+# (adapted from carbonate's release workflow).
+#
+# A repository rather than a bundle, because a bundle is a file and not a
+# remote. `flatpak update` has nothing to pull from; every bundle is the same
+# ref at the same version, so a second `flatpak install` stops at "already
+# installed"; and GNOME Software fails outright trying to invent an origin for
+# the debug extension. A repository has none of those problems, because OSTree
+# tells builds apart by commit rather than by version.
+#
+# The bundle is still attached to the rolling release for anyone who wants a
+# single file, but it is the fallback now, not the route.
+#
+# This waits on CI rather than running alongside it: a build published from a
+# commit whose tests then failed is worse than no build at all. CI already
+# builds the repo, so this only promotes it — nothing is compiled twice.
+#
+# workflow_run only fires for workflows on the default branch, so this file
+# does nothing until it is on main.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Two merges in quick succession would otherwise race to rewrite the same
+# repository, and one of them would lose.
+concurrency:
+  group: continuous-release
+  cancel-in-progress: false
+
+env:
+  REF: app/io.github.develonrails.Earbuds/x86_64/master
+  PAGES_URL: https://develonrails.github.io/earbuds
+
+jobs:
+  continuous:
+    # "completed" includes failed, cancelled and timed out. Publishing also
+    # waits for the repository to go public, at the first release: GitHub
+    # Pages needs a public repository on this plan, and the
+    # FLATPAK_GPG_PRIVATE_KEY secret and Pages (gh-pages branch) must be set
+    # up by then.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      !github.event.repository.private
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the tools that move OSTree commits around
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends flatpak ostree
+
+      - name: Take what CI already built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh run download "${{ github.event.workflow_run.id }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name earbuds-repo \
+            --dir incoming
+
+          tar -xf incoming/earbuds-repo.tar
+          mv repo incoming-repo
+
+          gh run download "${{ github.event.workflow_run.id }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name earbuds-x86_64.flatpak \
+            --dir bundle
+
+          # The artifact is named for the architecture; the file inside it is
+          # not. Users download the file, so it is the one that needs saying.
+          mv bundle/earbuds.flatpak earbuds-x86_64.flatpak
+
+      # The published repository is every previous release, and it has to be
+      # here before this build can be committed on top of it. It is absent on
+      # the first run only — the one that creates it.
+      - name: Fetch the published repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if git clone --quiet --depth 1 --branch gh-pages \
+               "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" published; then
+            echo "Published repository found."
+          else
+            echo "No gh-pages branch yet — starting one."
+            mkdir -p published
+            ostree init --repo=published/repo --mode=archive
+          fi
+
+          # git does not store empty directories, and an OSTree repository
+          # keeps several. They are created by ostree init, survive the first
+          # publish in the runner's own filesystem, and are gone the moment
+          # the repository comes back through a clone of gh-pages — at which
+          # point build-update-repo stops with
+          #
+          #   error: Listing refs: opendir(refs/remotes): No such file or directory
+          #
+          # So every run after the first one failed, and the published
+          # repository stayed on the build that created it while CI went on
+          # reporting green.
+          # These are all of them, rather than only the two that happened to
+          # be reached first: what ostree init creates is the shape ostree
+          # expects to find, and a later operation may want one of the others.
+          mkdir -p published/repo/refs/heads \
+                   published/repo/refs/mirrors \
+                   published/repo/refs/remotes \
+                   published/repo/state \
+                   published/repo/extensions \
+                   published/repo/tmp/cache
+
+      - name: Unlock the signing key
+        env:
+          SIGNING_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "::error::FLATPAK_GPG_PRIVATE_KEY is not set — see docs/CONTRIBUTING.md"
+            exit 1
+          fi
+
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
+          printf '%s' "$SIGNING_KEY" | base64 -d | gpg --batch --quiet --import
+
+          keyid=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
+
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "KEYID=$keyid" >> "$GITHUB_ENV"
+
+      # build-commit-from rather than a plain pull: it commits this build into
+      # the published repository with the previous release as its parent. A
+      # pull would move the ref to a commit with nothing behind it, and an
+      # installed client has no path from where it is to where that is.
+      - name: Promote this build into the published repository
+        run: |
+          set -euo pipefail
+
+          flatpak build-commit-from \
+            --src-repo=incoming-repo \
+            --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" \
+            published/repo "$REF"
+
+          flatpak build-update-repo published/repo \
+            --gpg-sign="$KEYID" --gpg-homedir="$GNUPGHOME" \
+            --generate-static-deltas \
+            --prune --prune-depth=20
+
+      # Everything a client needs in order to add the remote, beside the repo
+      # it points at. The public key is inlined so that adding the remote and
+      # trusting it are one step rather than two.
+      - name: Write the files that point at it
+        run: |
+          set -euo pipefail
+
+          gpg --homedir "$GNUPGHOME" --export "$KEYID" > public.gpg
+
+          cat > published/earbuds.flatpakrepo <<REPOFILE
+          [Flatpak Repo]
+          Title=Earbuds
+          Url=$PAGES_URL/repo/
+          Homepage=https://github.com/$GITHUB_REPOSITORY
+          Comment=Noise control, equalizer and battery for JBL earbuds
+          Description=Builds of Earbuds from the current main.
+          Icon=$PAGES_URL/icon.svg
+          GPGKey=$(base64 -w0 < public.gpg)
+          REPOFILE
+
+          cp data/icons/io.github.develonrails.Earbuds.svg published/icon.svg
+
+          # Without this, Pages puts the whole OSTree repo through Jekyll,
+          # which is slow and drops the files it decides look like templates.
+          touch published/.nojekyll
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          cd published
+          rm -rf .git
+
+          # A fresh orphan commit every time, force-pushed. The repository's
+          # own history lives inside OSTree; keeping a git history of it as
+          # well would grow every clone without bound and serve nobody.
+          git init --quiet --initial-branch=gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit --quiet -m "Publish ${SHA:0:7}"
+          git push --quiet --force \
+            "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" gh-pages
+
+      - name: Replace the rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          notes=$(cat <<NOTES
+          The current state of \`main\`, built and tested by CI — **not a tagged
+          release**. It moves with every green run and carries no upgrade
+          guarantees.
+
+          Built from [\`${SHA:0:7}\`](https://github.com/$GITHUB_REPOSITORY/commit/$SHA)
+          on $(date -u '+%Y-%m-%d %H:%M UTC').
+
+          ### Install
+
+          \`\`\`sh
+          flatpak remote-add --user --if-not-exists --from \\
+            earbuds $PAGES_URL/earbuds.flatpakrepo
+
+          flatpak install --user earbuds io.github.develonrails.Earbuds
+          \`\`\`
+
+          After that \`flatpak update\` picks up every new build, and so does
+          GNOME Software. You only add the remote once.
+
+          ### The bundle below
+
+          \`earbuds-x86_64.flatpak\` is this same build as a single file, for
+          installing without adding a remote. It cannot be updated in place —
+          \`--or-update\` replaces it — so prefer the repository above.
+          NOTES
+          )
+
+          # Deleting and recreating keeps the tag on the commit the build was
+          # actually made from. Editing in place would leave the tag behind on
+          # whichever commit first created it, and a tag that points at the
+          # wrong source is worse than a few seconds without a release.
+          gh release delete continuous --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+
+          gh release create continuous earbuds-x86_64.flatpak \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --prerelease \
+            --title "Continuous build" \
+            --notes "$notes"

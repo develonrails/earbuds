@@ -1,0 +1,53 @@
+# Earbuds as a Flatpak. Before building, vendor the crates once:
+#
+#   cargo vendor --locked vendor > build-aux/flatpak/cargo-config.toml
+#   flatpak run org.flatpak.Builder --user --install --force-clean \
+#     build-dir build-aux/flatpak/io.github.develonrails.Earbuds.yml
+#
+# The build itself is offline. cargo-config.toml points cargo at vendor/.
+app-id: io.github.develonrails.Earbuds
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: earbuds
+
+finish-args:
+  # Display
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # BlueZ: which headset is connected, and the scan for its control
+  # advertiser.
+  - --system-talk-name=org.bluez
+  # The control link itself is a raw L2CAP (ATT) socket to the buds, not a
+  # BlueZ object: AF_BLUETOOTH sockets are closed to apps without this.
+  - --allow=bluetooth
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/earbuds/cargo
+    CARGO_NET_OFFLINE: 'true'
+
+modules:
+  - name: earbuds
+    buildsystem: simple
+    build-commands:
+      - mkdir -p .cargo && cp build-aux/flatpak/cargo-config.toml .cargo/config.toml
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/earbuds /app/bin/earbuds
+      - install -Dm644 data/io.github.develonrails.Earbuds.desktop /app/share/applications/io.github.develonrails.Earbuds.desktop
+      - install -Dm644 data/io.github.develonrails.Earbuds.metainfo.xml /app/share/metainfo/io.github.develonrails.Earbuds.metainfo.xml
+      - install -Dm644 data/icons/io.github.develonrails.Earbuds.svg /app/share/icons/hicolor/scalable/apps/io.github.develonrails.Earbuds.svg
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - build-dir
+          - .flatpak-builder
+          - repo
+          - .git
