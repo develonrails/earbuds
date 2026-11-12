@@ -12,10 +12,13 @@ GTK 4 and libadwaita.
 
 ## What Earbuds stands for
 
-**Frugal.** All Bluetooth work happens on one thread that sleeps until BlueZ or
-the window has something to say: no polling while nothing is connected, and a
-battery read every two minutes while something is. Commands are paced, and a
-dragged equalizer slider sends where it stopped, not every step it passed.
+**Frugal.** With its window open, Earbuds uses about 11 MB of memory of its own
+and six threads, and no CPU at rest. All Bluetooth work happens on one thread
+that sleeps until BlueZ or the window has something to say: no polling while
+nothing is connected, and a battery read every two minutes while something is.
+It draws with GTK's software renderer, which halves what a window this small
+costs with the GPU's. Commands are paced, and a dragged equalizer slider sends
+where it stopped, not every step it passed.
 
 **Native.** A GNOME app, following the Human Interface Guidelines, your light
 or dark style and accent colour, and shipped as a Flatpak.

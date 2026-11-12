@@ -29,6 +29,11 @@ finish-args:
   # namespace: in a sandbox of its own, socket() fails with EAFNOSUPPORT.
   # Earbuds makes no network connections; this is for the namespace alone.
   - --share=network
+  # GTK's software renderer. For one small window it draws as fast as the
+  # eye needs, and it halves what the app costs: measured on a laptop with
+  # an AMD GPU, 52 MB resident and 11 MB of its own with 6 threads, against
+  # 85 MB, 19 MB and 12 threads with the default Vulkan renderer (GL: 164 MB).
+  - --env=GSK_RENDERER=cairo
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

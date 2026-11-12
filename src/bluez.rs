@@ -37,6 +37,16 @@ trait Device1 {
     fn disconnect(&self) -> zbus::Result<()>;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Match {
+    Exact,
+    Likely,
+    No,
+}
+
+/// How long an exact "-LE" match gets before a likely one is taken.
+const PREFER_EXACT: Duration = Duration::from_secs(4);
+
 #[derive(Clone, Debug, Default)]
 pub struct Device {
     pub path: String,
@@ -99,12 +109,21 @@ impl Device {
                 || self.name.to_ascii_uppercase().starts_with("JBL"))
     }
 
-    /// The buds' control side: a random-address advertiser named "<name>-LE"
-    /// (Wave Buds 2, Tune 230NC), or one carrying Harman's service data.
-    fn is_control_advertiser(&self, headset: &str) -> bool {
-        self.random
-            && (self.name == format!("{headset}-LE")
-                || (self.harman_data && self.name.to_ascii_uppercase().starts_with("JBL")))
+    /// How likely this is the buds' control side: a random-address
+    /// advertiser named "<name>-LE" (Wave Buds 2, Tune 230NC) certainly is.
+    /// One that only carries Harman's service data may be, on a model without
+    /// the "-LE" name, but the Wave Buds 2 also send such advertisements
+    /// without the control service behind them.
+    fn control_match(&self, headset: &str) -> Match {
+        if !self.random {
+            Match::No
+        } else if self.name == format!("{headset}-LE") {
+            Match::Exact
+        } else if self.harman_data && self.name.to_ascii_uppercase().starts_with("JBL") {
+            Match::Likely
+        } else {
+            Match::No
+        }
     }
 
     fn adapter(&self) -> &str {
@@ -206,17 +225,36 @@ impl Bluez {
         ]);
         adapter.set_discovery_filter(filter).await?;
         adapter.start_discovery().await?;
-        let search = async {
-            while let Some(Ok(msg)) = stream.next().await {
-                if let Some(device) = self.advertised(&msg).await
-                    && device.is_control_advertiser(&headset.name)
-                {
-                    return Some(device.address);
+        let started = tokio::time::Instant::now();
+        let mut likely = None;
+        let mut found = None;
+        loop {
+            // A likely match waits for an exact one, but not past PREFER_EXACT.
+            let until = started
+                + if likely.is_some() {
+                    PREFER_EXACT.min(wait)
+                } else {
+                    wait
+                };
+            let msg = match tokio::time::timeout_at(until, stream.next()).await {
+                Ok(Some(Ok(msg))) => msg,
+                Ok(Some(Err(_))) => continue,
+                Ok(None) | Err(_) => break,
+            };
+            if let Some(device) = self.advertised(&msg).await {
+                match device.control_match(&headset.name) {
+                    Match::Exact => {
+                        found = Some(device.address);
+                        break;
+                    }
+                    Match::Likely => {
+                        likely.get_or_insert(device.address);
+                    }
+                    Match::No => {}
                 }
             }
-            None
-        };
-        let found = tokio::time::timeout(wait, search).await.ok().flatten();
+        }
+        let found = found.or(likely);
         let _ = adapter.stop_discovery().await;
         let _ = adapter.set_discovery_filter(HashMap::new()).await;
         Ok(found)
@@ -382,7 +420,21 @@ mod tests {
         );
         assert!(!d.is_jbl_headset());
         assert!(d.seen_now);
-        assert!(d.is_control_advertiser("JBL Wave Buds 2"));
-        assert!(!d.is_control_advertiser("JBL Tune Beam 2"));
+        assert_eq!(d.control_match("JBL Wave Buds 2"), Match::Exact);
+        assert_eq!(d.control_match("JBL Tune Beam 2"), Match::No);
+    }
+
+    #[test]
+    fn harman_service_data_alone_is_only_likely() {
+        let mut d = Device::new(
+            "/org/bluez/hci0/dev_CD_D7_3A_5D_F9_FA",
+            &props(&[
+                ("Address", Value::from("CD:D7:3A:5D:F9:FA")),
+                ("AddressType", Value::from("random")),
+                ("Name", Value::from("JBL Wave Buds 2")),
+            ]),
+        );
+        d.harman_data = true;
+        assert_eq!(d.control_match("JBL Wave Buds 2"), Match::Likely);
     }
 }
