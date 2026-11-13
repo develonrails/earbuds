@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- An orange disc with a pair of dark earbuds; a darker base gives it GNOME's slight depth. -->
+  <circle cx="64" cy="68" r="56" fill="#c64600"/>
+  <circle cx="64" cy="64" r="56" fill="#ff6600"/>
+  <g id="bud" transform="rotate(-12 44 60)">
+    <rect x="38" y="56" width="13" height="40" rx="6.5" fill="#241f31"/>
+    <circle cx="44.5" cy="52" r="15" fill="#1c1a22"/>
+    <circle cx="44.5" cy="52" r="6.5" fill="#5e5c64"/>
+  </g>
+  <use href="#bud" transform="matrix(-1 0 0 1 128 0)"/>
+</svg>
