@@ -31,6 +31,16 @@
     </p>
   </description>
 
+  <keywords>
+    <keyword>JBL</keyword>
+    <keyword>Wave Buds 2</keyword>
+    <keyword>Earbuds</keyword>
+    <keyword>Headphones</keyword>
+    <keyword>Noise cancelling</keyword>
+    <keyword>Equalizer</keyword>
+    <keyword>Bluetooth</keyword>
+  </keywords>
+
   <launchable type="desktop-id">io.github.develonrails.Earbuds.desktop</launchable>
 
   <url type="homepage">https://github.com/develonrails/earbuds</url>
